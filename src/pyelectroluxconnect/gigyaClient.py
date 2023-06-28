@@ -75,7 +75,7 @@ def calcSignature(baseString: str, secretKey: str):
     encodedKey = secretKey.encode('utf-8')
     rawHmac = hmac.new(b64decode(encodedKey), encodedBase, sha1).digest()
     signature = b64encode(rawHmac)
-    signature = signature.decode('utf-8')
+    return signature.decode('utf-8')
 
 def getOAuth1Signature(secretKey: str, httpMethod: str, url: str, isSecureConnection: bool, requestParams: dict):
         # Taken from https://github.com/SAP/gigya-python-sdk/blob/main/GSSDK.py#L276
@@ -96,7 +96,7 @@ class GigyaClient:
             self._client_session = ClientSession()
             self._close_session = True
 
-    def _generate_nonce():
+    def _generate_nonce(self):
         return f'{current_milli_time()}_{random.randrange(1000000000, 10000000000)}'
 
     async def get_ids(self):
@@ -113,7 +113,7 @@ class GigyaClient:
                 "targetEnv": "mobile"
                 }) as response:
 
-            data: SocializeGetIdsResponse = await response.json()
+            data: SocializeGetIdsResponse = await response.json(content_type=None)
             return data
 
     async def login_session(self, username: str, password: str, gmid: str, ucid: str):
@@ -134,7 +134,7 @@ class GigyaClient:
                 "ucid": ucid
             }) as response:
 
-            data: LoginResponse = await response.json()
+            data: LoginResponse = await response.json(content_type=None)
             return data
 
     async def get_JWT(self, sessionToken: str, sessionSecret: str, gmid: str, ucid: str):
@@ -154,13 +154,13 @@ class GigyaClient:
             "timestamp": floor(time.time()),
             "ucid": ucid
         }
-        dataParams["sig"] = getOAuth1Signature(sessionSecret, "POST", url, True, data)
+        dataParams["sig"] = getOAuth1Signature(sessionSecret, "POST", url, True, dataParams)
 
         async with await self._client_session.post(
             url,
             data=dataParams) as response:
 
-            data: GetJWTResponse = await response.json()
+            data: GetJWTResponse = await response.json(content_type=None)
             return data
 
     async def login_user(self, username: str, password: str):
