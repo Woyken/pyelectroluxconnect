@@ -1,6 +1,13 @@
 
 from typing import TypedDict
 
+class UserTokenResponse(TypedDict):
+    accessToken: str
+    expiresIn: int
+    tokenType: str
+    refreshToken: str
+    scope: str
+
 class ClientCredTokenResponse(TypedDict):
     accessToken: str
     expiresIn: int

@@ -1,10 +1,13 @@
+from base64 import b64decode
+from datetime import datetime, timedelta
+from json import loads
 from types import TracebackType
 from typing import Optional, Type
 from urllib.parse import urljoin
 from aiohttp import ClientSession
 
 from .gigyaClient import GigyaClient
-from .apiModels import AuthResponse, ClientCredTokenResponse
+from .apiModels import AuthResponse, ClientCredTokenResponse, UserTokenResponse
 
 API_KEY_ELECTROLUX = "2AMqwEV5MqVhTKrRCyYfVF8gmKrd2rAmp7cUsfky"
 API_KEY_AEG = "PEdfAP7N7sUc95GJPePDU54e2Pybbt6DZtdww7dz"
@@ -16,6 +19,18 @@ BRAND_ELECTROLUX = "electrolux"
 BRAND_AEG = "aeg"
 
 BASE_URL = "https://api.ocp.electrolux.one"
+
+def decodeJwt(token: str):
+    token_payload = token.split(".")[1]
+    token_payload_decoded = str(b64decode(token_payload + "=="), "utf-8")
+    payload: dict = loads(token_payload_decoded)
+    return payload
+
+class UserToken:
+    def __init__(self, token: UserTokenResponse) -> None:
+        self.token = token
+        self.expiresAt = datetime.now() + timedelta(seconds=token['expiresIn'])
+        pass
 
 class OneAppApi:
     _regional_base_url: Optional[str] = None
@@ -47,6 +62,22 @@ class OneAppApi:
             data: ClientCredTokenResponse = await response.json()
             return data
 
+    async def _fetch_exchange_login_user(self, idToken: str):
+        #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
+        url = urljoin(self._get_base_url(), "one-account-authorization/api/v1/token")
+        decodedToken = decodeJwt(idToken)
+        headers = self._api_headers_base()
+        headers["Origin-Country-Code"] = decodedToken["country"]
+        async with await self._get_session().get(url, json={ "grantType": "urn:ietf:params:oauth:grant-type:token-exchange", "clientId": CLIENT_ID_ELECTROLUX, "idToken": idToken, "scope": "" }, headers=headers) as response:
+            token: UserTokenResponse = await response.json()
+            return UserToken(token)
+
+    async def _fetch_refresh_token_user(self, token: UserToken):
+        #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
+        url = urljoin(self._get_base_url(), "one-account-authorization/api/v1/token")
+        async with await self._get_session().get(url, json={ "grantType": "refresh_token", "clientId": CLIENT_ID_ELECTROLUX, "refreshToken": token.token["refreshToken"], "scope": "" }, headers=self._api_headers_base()) as response:
+            token: UserTokenResponse = await response.json()
+            return UserToken(token)
 
     async def _fetch_identity_providers(self, username: str):
         #https://api.ocp.electrolux.one/one-account-user/api/v1/identity-providers?brand=electrolux&email={{username}}
