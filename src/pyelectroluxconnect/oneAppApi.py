@@ -21,21 +21,25 @@ BRAND_AEG = "aeg"
 BASE_URL = "https://api.ocp.electrolux.one"
 BASE_WEBSOCKET_URL = "wss://ws.ocp.electrolux.one"
 
+
 def decodeJwt(token: str):
     token_payload = token.split(".")[1]
     token_payload_decoded = str(b64decode(token_payload + "=="), "utf-8")
     payload: dict = loads(token_payload_decoded)
     return payload
 
+
 class UserToken:
     def __init__(self, token: UserTokenResponse) -> None:
         self.token = token
-        self.expiresAt = datetime.now() + timedelta(seconds=token['expiresIn'])
+        self.expiresAt = datetime.now() + timedelta(seconds=token["expiresIn"])
+
 
 class ClientToken:
     def __init__(self, token: ClientCredTokenResponse) -> None:
         self.token = token
-        self.expiresAt = datetime.now() + timedelta(seconds=token['expiresIn'])
+        self.expiresAt = datetime.now() + timedelta(seconds=token["expiresIn"])
+
 
 class OneAppApi:
     _regional_websocket_base_url: Optional[str] = None
@@ -56,45 +60,93 @@ class OneAppApi:
         return self._client_session
 
     def _api_headers_base(self):
-        return { "x-api-key": API_KEY_ELECTROLUX }
+        return {"x-api-key": API_KEY_ELECTROLUX}
 
     async def _fetch_login_client_credentials(self, username: str):
-        #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
-        async with await self._get_session().post(url, json={ "grantType": "client_credentials", "clientId": CLIENT_ID_ELECTROLUX, "clientSecret": CLIENT_SECRET_ELECTROLUX, "scope": "" }, headers=self._api_headers_base()) as response:
+        # https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
+        url = urljoin(
+            await self._get_regional_base_url(username),
+            "one-account-authorization/api/v1/token",
+        )
+        async with await self._get_session().post(
+            url,
+            json={
+                "grantType": "client_credentials",
+                "clientId": CLIENT_ID_ELECTROLUX,
+                "clientSecret": CLIENT_SECRET_ELECTROLUX,
+                "scope": "",
+            },
+            headers=self._api_headers_base(),
+        ) as response:
             token: ClientCredTokenResponse = await response.json()
             return ClientToken(token)
 
     async def _get_client_token(self, username: str):
-        if self._client_token is not None and self._client_token.expiresAt > datetime.now():
+        if (
+            self._client_token is not None
+            and self._client_token.expiresAt > datetime.now()
+        ):
             return self._client_token
         token = await self._fetch_login_client_credentials(username)
         self._client_token = token
         return token
 
     async def _fetch_exchange_login_user(self, username: str, idToken: str):
-        #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
+        # https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
+        url = urljoin(
+            await self._get_regional_base_url(username),
+            "one-account-authorization/api/v1/token",
+        )
         decodedToken = decodeJwt(idToken)
         headers = self._api_headers_base()
         headers["Origin-Country-Code"] = decodedToken["country"]
-        async with await self._get_session().post(url, json={ "grantType": "urn:ietf:params:oauth:grant-type:token-exchange", "clientId": CLIENT_ID_ELECTROLUX, "idToken": idToken, "scope": "" }, headers=headers) as response:
+        async with await self._get_session().post(
+            url,
+            json={
+                "grantType": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "clientId": CLIENT_ID_ELECTROLUX,
+                "idToken": idToken,
+                "scope": "",
+            },
+            headers=headers,
+        ) as response:
             token: UserTokenResponse = await response.json()
             return UserToken(token)
 
     async def _fetch_refresh_token_user(self, username: str, token: UserToken):
-        #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
-        async with await self._get_session().post(url, json={ "grantType": "refresh_token", "clientId": CLIENT_ID_ELECTROLUX, "refreshToken": token.token["refreshToken"], "scope": "" }, headers=self._api_headers_base()) as response:
+        # https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
+        url = urljoin(
+            await self._get_regional_base_url(username),
+            "one-account-authorization/api/v1/token",
+        )
+        async with await self._get_session().post(
+            url,
+            json={
+                "grantType": "refresh_token",
+                "clientId": CLIENT_ID_ELECTROLUX,
+                "refreshToken": token.token["refreshToken"],
+                "scope": "",
+            },
+            headers=self._api_headers_base(),
+        ) as response:
             token: UserTokenResponse = await response.json()
             return UserToken(token)
 
-    async def _fetch_identity_providers(self, username: str, clientToken: ClientCredTokenResponse):
-        #https://api.ocp.electrolux.one/one-account-user/api/v1/identity-providers?brand=electrolux&email={{username}}
-        url = urljoin(await self._get_regional_base_url(username), "one-account-user/api/v1/identity-providers")
-        headers=self._api_headers_base()
-        headers["Authorization"] = f'{clientToken["tokenType"]} {clientToken["accessToken"]}'
-        async with await self._get_session().get(url, params={ "brand": "electrolux", "email": username }, headers=headers) as response:
+    async def _fetch_identity_providers(
+        self, username: str, clientToken: ClientCredTokenResponse
+    ):
+        # https://api.ocp.electrolux.one/one-account-user/api/v1/identity-providers?brand=electrolux&email={{username}}
+        url = urljoin(
+            await self._get_regional_base_url(username),
+            "one-account-user/api/v1/identity-providers",
+        )
+        headers = self._api_headers_base()
+        headers[
+            "Authorization"
+        ] = f'{clientToken["tokenType"]} {clientToken["accessToken"]}'
+        async with await self._get_session().get(
+            url, params={"brand": "electrolux", "email": username}, headers=headers
+        ) as response:
             data: list[AuthResponse] = await response.json()
             return data
 
@@ -124,7 +176,9 @@ class OneAppApi:
         if self._gigya_client is not None:
             return self._gigya_client
         data = await self._get_identity_providers(username)
-        gigyaClient = GigyaClient(self._get_session(), data[0]["domain"], data[0]["apiKey"])
+        gigyaClient = GigyaClient(
+            self._get_session(), data[0]["domain"], data[0]["apiKey"]
+        )
         self._gigya_client = gigyaClient
         return gigyaClient
 
@@ -151,6 +205,11 @@ class OneAppApi:
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, exc_type: Optional[Type[BaseException]], exc_val: Optional[BaseException], exc_tb: Optional[TracebackType]) -> Optional[bool]:
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
         """TODO return true if want to suppress exception"""
         await self.close()
