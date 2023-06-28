@@ -3,7 +3,7 @@ from base64 import b64decode
 from datetime import datetime, timedelta
 from json import loads, dumps
 from types import TracebackType
-from typing import Optional, Type
+from typing import Any, Optional, Type
 from urllib.parse import urljoin
 from aiohttp import ClientSession, WSMsgType
 
@@ -33,7 +33,7 @@ BASE_WEBSOCKET_URL = "wss://ws.ocp.electrolux.one"
 def decodeJwt(token: str):
     token_payload = token.split(".")[1]
     token_payload_decoded = str(b64decode(token_payload + "=="), "utf-8")
-    payload: dict = loads(token_payload_decoded)
+    payload: dict[str, Any] = loads(token_payload_decoded)
     return payload
 
 
@@ -55,6 +55,7 @@ class OneAppApi:
     _client_token: Optional[ClientToken] = None
     _user_token: Optional[UserToken] = None
     _identity_providers: Optional[list[AuthResponse]] = None
+    _shutdown_complete_event: Optional[asyncio.Event] = None
 
     def __init__(self, client_session: Optional[ClientSession] = None) -> None:
         self._client_session = client_session
@@ -142,8 +143,8 @@ class OneAppApi:
             },
             headers=self._api_headers_base(),
         ) as response:
-            token: UserTokenResponse = await response.json()
-            return UserToken(token)
+            newToken: UserTokenResponse = await response.json()
+            return UserToken(newToken)
 
     async def _fetch_identity_providers(
         self, username: str, clientToken: ClientCredTokenResponse
@@ -171,7 +172,7 @@ class OneAppApi:
         self._identity_providers = providers
         return providers
 
-    async def _get_regional_base_url(self, username: str):
+    async def _get_regional_base_url(self, username: str) -> str:
         if self._client_token is None:
             return BASE_URL
         if self._identity_providers is None:
@@ -226,7 +227,7 @@ class OneAppApi:
         if self._shutdown_complete_event is not None:
             self._shutdown_complete_event.set()
         else:
-            self._connect_websocket(username, password, appliances)
+            await self._connect_websocket(username, password, appliances)
 
     async def _disconnect_websocket(self):
         self._shutdown_complete_event = asyncio.Event()
