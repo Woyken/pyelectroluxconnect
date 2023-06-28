@@ -116,7 +116,7 @@ class GigyaClient:
             data: SocializeGetIdsResponse = await response.json()
             return data
 
-    async def login(self, username: str, password: str, gmid: str, ucid: str):
+    async def login_session(self, username: str, password: str, gmid: str, ucid: str):
         #https://accounts.eu1.gigya.com/accounts.login
         url = f'https://accounts.{self._domain}/accounts.login'
         async with await self._client_session.post(
@@ -137,7 +137,7 @@ class GigyaClient:
             data: LoginResponse = await response.json()
             return data
 
-    async def getJWT(self, sessionToken: str, sessionSecret: str, gmid: str, ucid: str):
+    async def get_JWT(self, sessionToken: str, sessionSecret: str, gmid: str, ucid: str):
         #https://accounts.eu1.gigya.com/accounts.getJWT
         url = f'https://accounts.{self._domain}/accounts.getJWT'
 
@@ -162,6 +162,14 @@ class GigyaClient:
 
             data: GetJWTResponse = await response.json()
             return data
+
+    async def login_user(self, username: str, password: str):
+         ids = await self.get_ids()
+         gmid = ids["gmid"]
+         ucid = ids["ucid"]
+         session = await self.login_session(username, password, gmid, ucid)
+         jwt = await self.get_JWT(session["sessionInfo"]["sessionToken"], session["sessionInfo"]["sessionSecret"], gmid, ucid)
+         return jwt
 
     async def close(self):
         if self._client_session and self._close_session:
