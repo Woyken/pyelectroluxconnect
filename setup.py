@@ -24,7 +24,8 @@ setuptools.setup(
     packages=setuptools.find_packages(where="src"),
     install_requires=[
 			'requests>=2.20.0',
-			'beautifulsoup4>=4,<5'
+			'beautifulsoup4>=4,<5',
+            'aiohttp'
 	],
     package_data={'': ['certificatechain.pem']},
     zip_safe=False,
