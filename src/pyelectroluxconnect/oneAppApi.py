@@ -1,13 +1,21 @@
+import asyncio
 from base64 import b64decode
 from datetime import datetime, timedelta
-from json import loads
+from json import loads, dumps
 from types import TracebackType
 from typing import Optional, Type
 from urllib.parse import urljoin
-from aiohttp import ClientSession
+from aiohttp import ClientSession, WSMsgType
+
+from pyelectroluxconnect.Session import RequestError
 
 from .gigyaClient import GigyaClient
-from .apiModels import AuthResponse, ClientCredTokenResponse, UserTokenResponse
+from .apiModels import (
+    AuthResponse,
+    ClientCredTokenResponse,
+    UserTokenResponse,
+    WebSocketResponse,
+)
 
 API_KEY_ELECTROLUX = "2AMqwEV5MqVhTKrRCyYfVF8gmKrd2rAmp7cUsfky"
 API_KEY_AEG = "PEdfAP7N7sUc95GJPePDU54e2Pybbt6DZtdww7dz"
@@ -59,8 +67,13 @@ class OneAppApi:
             self._close_session = True
         return self._client_session
 
-    def _api_headers_base(self):
-        return {"x-api-key": API_KEY_ELECTROLUX}
+    def _api_headers_base(self, userToken: Optional[UserTokenResponse] = None):
+        headers = {"x-api-key": API_KEY_ELECTROLUX}
+        if userToken is not None:
+            headers[
+                "Authorization"
+            ] = f'{userToken["tokenType"]} {userToken["accessToken"]}'
+        return headers
 
     async def _fetch_login_client_credentials(self, username: str):
         # https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
@@ -181,6 +194,45 @@ class OneAppApi:
         )
         self._gigya_client = gigyaClient
         return gigyaClient
+
+    async def _connect_websocket(
+        self, username: str, password: str, appliances: list[str]
+    ):
+        token = await self.get_user_token(username, password)
+        headers = self._api_headers_base(token.token)
+        headers["appliances"] = dumps(
+            [{"applianceId": applianceId} for applianceId in appliances]
+        )
+        headers["version"] = "2"
+        url = await self._get_regional_websocket_base_url(username)
+        async with self._get_session().ws_connect(
+            url, proxy="htpp://127.0.0.1:8888", headers=headers
+        ) as ws:
+            self._ws_client = ws
+
+            async for msg in ws:
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
+                    break
+
+                if msg.type == WSMsgType.ERROR:
+                    raise RequestError()
+
+                if msg.type == WSMsgType.TEXT:
+                    res: WebSocketResponse = msg.json()
+                    print(res["Payload"]["Appliances"][0]["Metrics"][0]["Name"])
+                elif msg.type == WSMsgType.ERROR:
+                    break
+        print("no more messages?")
+        if self._shutdown_complete_event is not None:
+            self._shutdown_complete_event.set()
+        else:
+            self._connect_websocket(username, password, appliances)
+
+    async def _disconnect_websocket(self):
+        self._shutdown_complete_event = asyncio.Event()
+        await self._ws_client.close()
+        await self._shutdown_complete_event.wait()
+        pass
 
     async def get_user_token(self, username: str, password: str):
         if self._user_token is not None:
