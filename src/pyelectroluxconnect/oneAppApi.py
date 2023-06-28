@@ -19,6 +19,7 @@ BRAND_ELECTROLUX = "electrolux"
 BRAND_AEG = "aeg"
 
 BASE_URL = "https://api.ocp.electrolux.one"
+BASE_WEBSOCKET_URL = "wss://ws.ocp.electrolux.one"
 
 def decodeJwt(token: str):
     token_payload = token.split(".")[1]
@@ -30,14 +31,20 @@ class UserToken:
     def __init__(self, token: UserTokenResponse) -> None:
         self.token = token
         self.expiresAt = datetime.now() + timedelta(seconds=token['expiresIn'])
-        pass
+
+class ClientToken:
+    def __init__(self, token: ClientCredTokenResponse) -> None:
+        self.token = token
+        self.expiresAt = datetime.now() + timedelta(seconds=token['expiresIn'])
 
 class OneAppApi:
-    _regional_base_url: Optional[str] = None
     _regional_websocket_base_url: Optional[str] = None
     _gigya_client: Optional[GigyaClient] = None
+    _client_token: Optional[ClientToken] = None
+    _user_token: Optional[UserToken] = None
+    _identity_providers: Optional[list[AuthResponse]] = None
 
-    def __init__(self, client_session: ClientSession) -> None:
+    def __init__(self, client_session: Optional[ClientSession] = None) -> None:
         self._client_session = client_session
         self._close_session = False
         pass
@@ -46,55 +53,94 @@ class OneAppApi:
         if self._client_session is None:
             self._client_session = ClientSession()
             self._close_session = True
+        return self._client_session
 
-    def _get_base_url(self):
-        if self._regional_base_url is None:
-            return BASE_URL
-        return self._regional_base_url
-
-    def _api_headers_base():
+    def _api_headers_base(self):
         return { "x-api-key": API_KEY_ELECTROLUX }
 
-    async def _fetch_login_client_credentials(self):
+    async def _fetch_login_client_credentials(self, username: str):
         #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(self._get_base_url(), "one-account-authorization/api/v1/token")
-        async with await self._get_session().get(url, json={ "grantType": "client_credentials", "clientId": CLIENT_ID_ELECTROLUX, "clientSecret": CLIENT_SECRET_ELECTROLUX, "scope": "" }, headers=self._api_headers_base()) as response:
-            data: ClientCredTokenResponse = await response.json()
-            return data
+        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
+        async with await self._get_session().post(url, json={ "grantType": "client_credentials", "clientId": CLIENT_ID_ELECTROLUX, "clientSecret": CLIENT_SECRET_ELECTROLUX, "scope": "" }, headers=self._api_headers_base()) as response:
+            token: ClientCredTokenResponse = await response.json()
+            return ClientToken(token)
 
-    async def _fetch_exchange_login_user(self, idToken: str):
+    async def _get_client_token(self, username: str):
+        if self._client_token is not None and self._client_token.expiresAt > datetime.now():
+            return self._client_token
+        token = await self._fetch_login_client_credentials(username)
+        self._client_token = token
+        return token
+
+    async def _fetch_exchange_login_user(self, username: str, idToken: str):
         #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(self._get_base_url(), "one-account-authorization/api/v1/token")
+        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
         decodedToken = decodeJwt(idToken)
         headers = self._api_headers_base()
         headers["Origin-Country-Code"] = decodedToken["country"]
-        async with await self._get_session().get(url, json={ "grantType": "urn:ietf:params:oauth:grant-type:token-exchange", "clientId": CLIENT_ID_ELECTROLUX, "idToken": idToken, "scope": "" }, headers=headers) as response:
+        async with await self._get_session().post(url, json={ "grantType": "urn:ietf:params:oauth:grant-type:token-exchange", "clientId": CLIENT_ID_ELECTROLUX, "idToken": idToken, "scope": "" }, headers=headers) as response:
             token: UserTokenResponse = await response.json()
             return UserToken(token)
 
-    async def _fetch_refresh_token_user(self, token: UserToken):
+    async def _fetch_refresh_token_user(self, username: str, token: UserToken):
         #https://api.ocp.electrolux.one/one-account-authorization/api/v1/token
-        url = urljoin(self._get_base_url(), "one-account-authorization/api/v1/token")
-        async with await self._get_session().get(url, json={ "grantType": "refresh_token", "clientId": CLIENT_ID_ELECTROLUX, "refreshToken": token.token["refreshToken"], "scope": "" }, headers=self._api_headers_base()) as response:
+        url = urljoin(await self._get_regional_base_url(username), "one-account-authorization/api/v1/token")
+        async with await self._get_session().post(url, json={ "grantType": "refresh_token", "clientId": CLIENT_ID_ELECTROLUX, "refreshToken": token.token["refreshToken"], "scope": "" }, headers=self._api_headers_base()) as response:
             token: UserTokenResponse = await response.json()
             return UserToken(token)
 
-    async def _fetch_identity_providers(self, username: str):
+    async def _fetch_identity_providers(self, username: str, clientToken: ClientCredTokenResponse):
         #https://api.ocp.electrolux.one/one-account-user/api/v1/identity-providers?brand=electrolux&email={{username}}
-        url = urljoin(self._get_base_url(), "one-account-user/api/v1/identity-providers")
-        async with await self._get_session().get(url, params={ "brand": "electrolux", "email": username }, headers=self._api_headers_base()) as response:
+        url = urljoin(await self._get_regional_base_url(username), "one-account-user/api/v1/identity-providers")
+        headers=self._api_headers_base()
+        headers["Authorization"] = f'{clientToken["tokenType"]} {clientToken["accessToken"]}'
+        async with await self._get_session().get(url, params={ "brand": "electrolux", "email": username }, headers=headers) as response:
             data: list[AuthResponse] = await response.json()
             return data
 
-    async def _init_identity_provider(self, username: str):
-        data = await self._fetch_identity_providers(username)
-        self._regional_base_url: str = data[0]["httpRegionalBaseUrl"]
-        self._regional_websocket_base_url: str = data[0]["webSocketRegionalBaseUrl"]
-        gigyaDomain = data[0]["domain"]
-        gigyaApiKey: str = data[0]["apiKey"]
+    async def _get_identity_providers(self, username: str):
+        if self._identity_providers is not None:
+            return self._identity_providers
+        token = await self._get_client_token(username)
+        providers = await self._fetch_identity_providers(username, token.token)
+        self._identity_providers = providers
+        return providers
+
+    async def _get_regional_base_url(self, username: str):
+        if self._client_token is None:
+            return BASE_URL
+        if self._identity_providers is None:
+            return BASE_URL
+        providers = await self._get_identity_providers(username)
+        return providers[0]["httpRegionalBaseUrl"]
+
+    async def _get_regional_websocket_base_url(self, username: str):
+        if self._client_token is None:
+            return BASE_WEBSOCKET_URL
+        providers = await self._get_identity_providers(username)
+        return providers[0]["webSocketRegionalBaseUrl"]
+
+    async def _get_gigya_client(self, username: str):
         if self._gigya_client is not None:
-            await self._gigya_client.close()
-        self._gigya_client = GigyaClient(self._get_session(), gigyaDomain, gigyaApiKey)
+            return self._gigya_client
+        data = await self._get_identity_providers(username)
+        gigyaClient = GigyaClient(self._get_session(), data[0]["domain"], data[0]["apiKey"])
+        self._gigya_client = gigyaClient
+        return gigyaClient
+
+    async def get_user_token(self, username: str, password: str):
+        if self._user_token is not None:
+            if self._user_token.expiresAt > datetime.now():
+                return self._user_token
+            token = await self._fetch_refresh_token_user(username, self._user_token)
+            self._user_token = token
+            return token
+
+        gigyaClient = await self._get_gigya_client(username)
+        idToken = await gigyaClient.login_user(username, password)
+        token = await self._fetch_exchange_login_user(username, idToken["id_token"])
+        self._user_token = token
+        return token
 
     async def close(self) -> None:
         if self._client_session and self._close_session:
