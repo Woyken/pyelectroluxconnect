@@ -207,7 +207,7 @@ class OneAppApi:
         headers["version"] = "2"
         url = await self._get_regional_websocket_base_url(username)
         async with self._get_session().ws_connect(
-            url, proxy="htpp://127.0.0.1:8888", headers=headers
+            url, headers=headers
         ) as ws:
             self._ws_client = ws
 
