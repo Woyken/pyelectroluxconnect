@@ -61,6 +61,8 @@ class OneAppApi:
         self._regional_websocket_base_url: str = data[0]["webSocketRegionalBaseUrl"]
         gigyaDomain = data[0]["domain"]
         gigyaApiKey: str = data[0]["apiKey"]
+        if self._gigya_client is not None:
+            await self._gigya_client.close()
         self._gigya_client = GigyaClient(self._get_session(), gigyaDomain, gigyaApiKey)
 
     async def close(self) -> None:
