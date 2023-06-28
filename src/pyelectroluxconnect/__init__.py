@@ -5,8 +5,11 @@ __all__ = [
     'LoginError',
     'RequestError',
     'ResponseError',
-    'Session'
+    'Session',
+    'OneAppApi'
 ]
+
+from .oneAppApi import OneAppApi
 
 from .Session import (
     Error,
