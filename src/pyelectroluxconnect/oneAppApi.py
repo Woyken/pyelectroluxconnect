@@ -64,7 +64,12 @@ class WebSocketClient:
     def add_event_handler(self, handler: Callable[[WebSocketResponse], None]):
         self.event_handlers.append(handler)
 
-    def connect(self, headers: dict[str, Any]):
+    async def connect(self, headers: dict[str, Any]):
+        await self.disconnect()
+        # wait for previous task to finish
+        if self.connect_task:
+            await self.connect_task
+
         connect_task = asyncio.create_task(self._connect(headers))
 
         self.connect_task = connect_task
@@ -76,11 +81,6 @@ class WebSocketClient:
     async def _connect(
         self, headers: dict[str, Any]
     ):
-        await self.disconnect()
-        # wait for previous task to finish
-        if self.connect_task:
-            await self.connect_task
-
         self.retry = True
         while self.retry:
             try:
