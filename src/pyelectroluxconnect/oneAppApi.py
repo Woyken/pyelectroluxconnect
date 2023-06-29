@@ -3,9 +3,9 @@ from base64 import b64decode
 from datetime import datetime, timedelta
 from json import loads, dumps
 from types import TracebackType
-from typing import Any, Optional, Type
+from typing import Any, Callable, Optional, Type
 from urllib.parse import urljoin
-from aiohttp import ClientSession, WSMsgType
+from aiohttp import ClientError, ClientSession, ClientWebSocketResponse, WSMsgType
 
 from pyelectroluxconnect.Session import RequestError
 
@@ -49,9 +49,105 @@ class ClientToken:
         self.expiresAt = datetime.now() + timedelta(seconds=token["expiresIn"])
 
 
+class WebSocketClient:
+    def __init__(self, clientSession: ClientSession, url: str):
+        self._client_session = clientSession
+        self._url = url
+        self.websocket = None
+        self.connect_task = None
+        self.retry = False
+        self.retry_interval = 5  # seconds
+        self.heartbeat_interval = 5 * 60  # 5 minutes
+        self.event_loop = asyncio.get_event_loop()
+        self.event_handlers: list[Callable[[WebSocketResponse], None]] = []
+
+    def add_event_handler(self, handler: Callable[[WebSocketResponse], None]):
+        self.event_handlers.append(handler)
+
+    def connect(self, headers: dict[str, Any]):
+        connect_task = asyncio.create_task(self._connect(headers))
+
+        self.connect_task = connect_task
+        return connect_task
+
+    def get_connect_task(self):
+        return self.connect_task
+
+    async def _connect(
+        self, headers: dict[str, Any]
+    ):
+        await self.disconnect()
+        # wait for previous task to finish
+        if self.connect_task:
+            await self.connect_task
+
+        self.retry = True
+        while self.retry:
+            try:
+                async with self._client_session.ws_connect(
+                    self._url,
+                    headers=headers,
+                    # Connection will be broken after 10 minutes of inactivity, keep it alive with heartbeat messages
+                    heartbeat=self.heartbeat_interval,
+                ) as ws:
+                    self.websocket = ws
+                    print("WebSocket connection established")
+                    # Block until connection closes
+                    await self.handle_messages(ws)
+            except ClientError:
+                print(
+                    "WebSocket connection failed. Retrying in {} seconds.".format(
+                        self.retry_interval
+                    )
+                )
+                await asyncio.sleep(self.retry_interval)
+
+    async def handle_messages(self, ws: ClientWebSocketResponse):
+        try:
+            async for msg in ws:
+                print("websocket message received, type", str(msg.type))
+                if isinstance(msg.data, str):
+                    print("string message received", msg.data)
+
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
+                    break
+                if msg.type == WSMsgType.ERROR:
+                    raise RequestError()
+
+                if msg.type == WSMsgType.TEXT:
+                    parsed_message: WebSocketResponse = msg.json()
+                    # print(parsed_message["Payload"]["Appliances"][0]["Metrics"][0]["Name"])
+                    for handler in self.event_handlers:
+                        self.event_loop.call_soon(handler, parsed_message)
+        finally:
+            await ws.close()
+            print("WebSocket connection closed")
+
+    async def disconnect(self):
+        self.retry = False
+        if self.websocket is not None:
+            await self.websocket.close()
+
+    async def close(self) -> None:
+        if self.websocket is not None:
+            await self.websocket.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> Optional[bool]:
+        await self.close()
+
+
 class OneAppApi:
     _regional_websocket_base_url: Optional[str] = None
     _gigya_client: Optional[GigyaClient] = None
+    _ws_client: Optional[WebSocketClient] = None
     _client_token: Optional[ClientToken] = None
     _user_token: Optional[UserToken] = None
     _identity_providers: Optional[list[AuthResponse]] = None
@@ -196,7 +292,17 @@ class OneAppApi:
         self._gigya_client = gigyaClient
         return gigyaClient
 
-    async def _connect_websocket(
+    async def _get_websocket_client(self, username: str):
+        if self._ws_client is not None:
+            return self._ws_client
+
+        session = self._get_session()
+        url = await self._get_regional_websocket_base_url(username)
+        ws_client = WebSocketClient(session, url)
+        self._ws_client = ws_client
+        return ws_client
+
+    async def connect_websocket(
         self, username: str, password: str, appliances: list[str]
     ):
         token = await self.get_user_token(username, password)
@@ -205,35 +311,56 @@ class OneAppApi:
             [{"applianceId": applianceId} for applianceId in appliances]
         )
         headers["version"] = "2"
-        url = await self._get_regional_websocket_base_url(username)
-        async with self._get_session().ws_connect(
-            url, headers=headers
-        ) as ws:
-            self._ws_client = ws
+        ws_client = await self._get_websocket_client(username)
 
-            async for msg in ws:
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
-                    break
+        return await ws_client.connect(headers)
 
-                if msg.type == WSMsgType.ERROR:
-                    raise RequestError()
+    async def get_websocket_task(self, username: str):
+        ws_client = await self._get_websocket_client(username)
+        return ws_client.get_connect_task()
 
-                if msg.type == WSMsgType.TEXT:
-                    res: WebSocketResponse = msg.json()
-                    print(res["Payload"]["Appliances"][0]["Metrics"][0]["Name"])
-                elif msg.type == WSMsgType.ERROR:
-                    break
-        print("no more messages?")
-        if self._shutdown_complete_event is not None:
-            self._shutdown_complete_event.set()
-        else:
-            await self._connect_websocket(username, password, appliances)
+    async def disconnect_websocket(self, username: str):
+        ws_client = await self._get_websocket_client(username)
+        await ws_client.disconnect()
 
-    async def _disconnect_websocket(self):
-        self._shutdown_complete_event = asyncio.Event()
-        await self._ws_client.close()
-        await self._shutdown_complete_event.wait()
-        pass
+    # async def _connect_websocket(
+    #     self, username: str, password: str, appliances: list[str]
+    # ):
+    #     token = await self.get_user_token(username, password)
+    #     headers = self._api_headers_base(token.token)
+    #     headers["appliances"] = dumps(
+    #         [{"applianceId": applianceId} for applianceId in appliances]
+    #     )
+    #     headers["version"] = "2"
+    #     url = await self._get_regional_websocket_base_url(username)
+    #     async with self._get_session().ws_connect(
+    #         url, headers=headers, heartbeat=60 * 5
+    #     ) as ws:
+    #         self._ws_client = ws
+
+    #         async for msg in ws:
+    #             if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
+    #                 break
+
+    #             if msg.type == WSMsgType.ERROR:
+    #                 raise RequestError()
+
+    #             if msg.type == WSMsgType.TEXT:
+    #                 res: WebSocketResponse = msg.json()
+    #                 print(res["Payload"]["Appliances"][0]["Metrics"][0]["Name"])
+    #             elif msg.type == WSMsgType.ERROR:
+    #                 break
+    #     print("no more messages?")
+    #     if self._shutdown_complete_event is not None:
+    #         self._shutdown_complete_event.set()
+    #     else:
+    #         await self._connect_websocket(username, password, appliances)
+
+    # async def _disconnect_websocket(self):
+    #     self._shutdown_complete_event = asyncio.Event()
+    #     await self._ws_client.close()
+    #     await self._shutdown_complete_event.wait()
+    #     pass
 
     async def get_user_token(self, username: str, password: str):
         if self._user_token is not None:
@@ -254,6 +381,8 @@ class OneAppApi:
             await self._client_session.close()
         if self._gigya_client:
             await self._gigya_client.close()
+        if self._ws_client:
+            await self._ws_client.close()
 
     async def __aenter__(self):
         return self
@@ -264,5 +393,4 @@ class OneAppApi:
         exc_val: Optional[BaseException],
         exc_tb: Optional[TracebackType],
     ) -> Optional[bool]:
-        """TODO return true if want to suppress exception"""
         await self.close()
