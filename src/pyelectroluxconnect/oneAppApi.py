@@ -313,7 +313,8 @@ class OneAppApi:
         headers["version"] = "2"
         ws_client = await self._get_websocket_client(username)
 
-        return await ws_client.connect(headers)
+        websocket_task = await ws_client.connect(headers)
+        return await websocket_task
 
     async def get_websocket_task(self, username: str):
         ws_client = await self._get_websocket_client(username)
