@@ -54,7 +54,6 @@ class WebSocketClient:
         self._client_session = clientSession
         self._url = url
         self.websocket = None
-        self.connect_task = None
         self.retry = False
         self.retry_interval = 5  # seconds
         self.heartbeat_interval = 5 * 60  # 5 minutes
@@ -66,17 +65,7 @@ class WebSocketClient:
 
     async def connect(self, headers: dict[str, Any]):
         await self.disconnect()
-        # wait for previous task to finish
-        if self.connect_task:
-            await self.connect_task
-
-        connect_task = asyncio.create_task(self._connect(headers))
-
-        self.connect_task = connect_task
-        return connect_task
-
-    def get_connect_task(self):
-        return self.connect_task
+        await self._connect(headers)
 
     async def _connect(
         self, headers: dict[str, Any]
@@ -313,12 +302,7 @@ class OneAppApi:
         headers["version"] = "2"
         ws_client = await self._get_websocket_client(username)
 
-        websocket_task = await ws_client.connect(headers)
-        return await websocket_task
-
-    async def get_websocket_task(self, username: str):
-        ws_client = await self._get_websocket_client(username)
-        return ws_client.get_connect_task()
+        await ws_client.connect(headers)
 
     async def disconnect_websocket(self, username: str):
         ws_client = await self._get_websocket_client(username)
