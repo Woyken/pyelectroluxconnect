@@ -9,7 +9,7 @@ __all__ = [
     'OneAppApi'
 ]
 
-from .oneAppApi import OneAppApi
+from .oneApp.oneAppApi import OneAppApi
 
 from .Session import (
     Error,
